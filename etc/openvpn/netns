@@ -1,0 +1,178 @@
+#!/bin/sh
+
+# OpenVPN up/down script that moves the TUN/TAP interface to given
+# network namespace.
+#
+case "$script_type" in
+
+    up)
+        resolv_conf_created=
+
+        # When called the first time, create netns-specific
+        # resolv.conf. '/sbin/ip netns exec' will bind mount this into
+        # /etc/resolv.conf inside the namespace. (note: This is
+        # compatible with NetworkManager, because it only cares about
+        # the normal namespaceless resolv.conf.)
+        create_resolv_conf () {
+            [ -n "$resolv_conf_created" ] && return
+            resolv_conf_created=true
+
+            # copy of $NETNS with control characters replaced with '?'
+            SAFE_NETNS="$(printf '%s' "$NETNS" | tr '\0-\37\177' '[?*]')"
+            printf '%s\n' \
+                "# Generated for openvpn connection in network namespace \"$SAFE_NETNS\"." \
+                "# This file will be automatically deleted." \
+                "# (Created as /etc/netns/$SAFE_NETNS/resolv.conf. '/sbin/ip netns exec' will" \
+                "# bind mount this into /etc/resolv.conf inside the namespace.)" \
+                "" \
+                > /etc/netns/"$NETNS"/resolv.conf
+            # When changing the first line of the above, also change
+            # the test string in the $script_type=down handler below.
+        }
+
+        foreign_opt_domains=
+
+        # Process one OpenVPN foreign option. Called with unquoted
+        # $foreign_option_<n>.
+        process_foreign_option () {
+            case "$1:$2" in
+                dhcp-option:DNS)
+                    # sanity check (IPv4 and IPv6 addresses allowed)
+                    case "$3" in
+                        *[!0-9a-fA-F.:]*) return ;;
+                    esac
+
+                    create_resolv_conf
+                    echo "nameserver $3" >> /etc/netns/"$NETNS"/resolv.conf
+                    ;;
+
+                dhcp-option:DOMAIN)
+                    # sanity check (valid domain names allowed)
+                    case "$3" in
+                        *[!-0-9a-zA-Z.]*) return ;;
+                    esac
+
+                    create_resolv_conf
+                    foreign_opt_domains="$foreign_opt_domains $3"
+                    ;;
+            esac
+        }
+
+        # Add domains to resolv.conf. Called with unquoted
+        # $foreign_opt_domains.
+        add_domains_to_resolv_conf () {
+            if [ $# -gt 0 ]; then
+                # Not sure if multiple DOMAIN options is legal and if
+                # this is the proper way to handle them. Use first
+                # domain as our local domain and add all of them to
+                # the domain search list.
+                printf '%s\n' \
+                       "domain $1" \
+                       "search $*" \
+                       >> /etc/netns/"$NETNS"/resolv.conf
+            fi
+        }
+
+
+        # move TUN/TAP device to the network namespace
+        /sbin/ip link set dev "$dev" up netns "$NETNS"  mtu "$tun_mtu"
+
+        # set device address
+        netmask4="${ifconfig_netmask:-30}"
+        netbits6="${ifconfig_ipv6_netbits:-112}"
+
+        if [ -n "$ifconfig_local" ]; then
+            if [ -n "$ifconfig_remote" ]; then
+               /sbin/ip netns exec "$NETNS" \
+                   /sbin/ip -4 addr add \
+                       local "$ifconfig_local" \
+                       peer "$ifconfig_remote/$netmask4" \
+                       ${ifconfig_broadcast:+broadcast "$ifconfig_broadcast"} \
+                       dev "$dev"
+            else
+                /sbin/ip netns exec "$NETNS" \
+                   /sbin/ip -4 addr add \
+                       local "$ifconfig_local/$netmask4" \
+                       ${ifconfig_broadcast:+broadcast "$ifconfig_broadcast"} \
+                       dev "$dev"
+            fi
+        fi
+        if [ -n "$IPV6" -a -n "$ifconfig_ipv6_local" ]; then
+            if [ -n "$ifconfig_ipv6_remote" ]; then
+                /sbin/ip netns exec "$NETNS" \
+                   /sbin/ip -6 addr add \
+                      local "$ifconfig_ipv6_local" \
+                      peer "$ifconfig_ipv6_remote/$netbits6" \
+                      dev "$dev"
+            else
+                /sbin/ip netns exec "$NETNS" \
+                   /sbin/ip -6 addr add \
+                      local "$ifconfig_ipv6_local/$netbits6" \
+                      dev "$dev"
+            fi
+        fi
+
+        # if there already is a resolv.conf for our netns, don't
+        # overwrite it
+        if ! [ -e /etc/netns/"$NETNS"/resolv.conf ]; then
+            # add DNS settings if given in foreign options
+            i=1
+            while
+                eval opt=\"\$foreign_option_$i\"
+                [ -n "$opt" ]
+            do
+                process_foreign_option $opt
+                i=$(( i + 1 ))
+            done
+            add_domains_to_resolv_conf $foreign_opt_domains
+        fi
+        ;;
+
+
+    route-up)
+        # set routes inside the namespace
+        /sbin/ip netns exec "$NETNS"  sh <<'EOF'
+            i=1
+            while
+                eval net=\"\$route_network_$i\"
+                eval mask=\"\$route_netmask_$i\"
+                eval gw=\"\$route_gateway_$i\"
+                eval mtr=\"\$route_metric_$i\"
+                [ -n "$net" ]
+            do
+                /sbin/ip -4 route add  "$net/$mask"  via "$gw"  ${mtr:+metric "$mtr"}
+                i=$(( i + 1 ))
+            done
+
+            if [ -n "$route_vpn_gateway" ]; then
+                /sbin/ip -4 route add  default  via "$route_vpn_gateway"
+            fi
+
+            if [ -n "$IPV6" ]; then
+                i=1
+                while
+                    # There doesn't seem to be $route_ipv6_metric_<n>
+                    # according to the manpage.
+                    eval net=\"\$route_ipv6_network_$i\"
+                    eval gw=\"\$route_ipv6_gateway_$i\"
+                    [ -n "$net" ]
+                do
+                    /sbin/ip -6 route add  "$net"  via "$gw"  metric 100
+                    i=$(( i + 1 ))
+                done
+
+                # There's no $route_vpn_gateway for IPv6. It's not
+                # documented if OpenVPN includes default route in
+                # $route_ipv6_*. Set default route to remote VPN
+                # endpoint address if there is one. Use higher metric
+                # than $route_ipv6_* routes to give preference to a
+                # possible default route in them.
+                if [ -n "$ifconfig_ipv6_remote" ]; then
+                    /sbin/ip -6 route add  default \
+                        via "$ifconfig_ipv6_remote"  metric 200
+                fi
+            fi
+EOF
+        ;;
+
+esac

@@ -1,0 +1,11 @@
+[Unit]
+Description=Backup Snapshots
+Requires=openvpn-ns@France.service
+After=openvpn-ns@France.service
+
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sleep 5
+ExecStart=/sbin/ip netns exec vpn-France /usr/bin/ping -c 1 1.1.1.1
+

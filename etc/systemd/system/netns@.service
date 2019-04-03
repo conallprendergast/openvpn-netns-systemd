@@ -1,0 +1,14 @@
+[Unit]
+Description=Service for network namespace %i
+StopWhenUnneeded=true
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/sbin/ip netns add %i
+ExecStart=/sbin/ip netns exec %i ip addr add 127.0.0.1/8 dev lo
+ExecStart=/sbin/ip netns exec %i ip link set lo up
+ExecStart=/bin/mkdir -p /etc/netns/%i
+
+ExecStop=/sbin/ip netns del %i
+ExecStop=/bin/rm -rf /etc/netns/%i

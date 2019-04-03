@@ -1,0 +1,42 @@
+#!/bin/bash
+
+if [ $# -ne 1 ]; then
+	echo "Usage: $(basename $0) <config>" >&2
+	exit 1
+fi
+
+FILE="$(basename $1)"
+FILENAME_BASE="${FILE%.*}"
+CURRENT_NS="$(ip netns identify $$)"
+
+if [[ "$CURRENT_NS" ]]; then
+	NEW_NS="$CURRENT_NS-$FILENAME_BASE"
+else
+	NEW_NS="vpn-$FILENAME_BASE"
+fi
+
+ip netns add "$NEW_NS"
+ip netns exec "$NEW_NS" ip addr add 127.0.0.1/8 dev lo
+ip netns exec "$NEW_NS" ip link set lo up
+
+mkdir -p "/etc/netns/$NEW_NS" > /dev/null 2>&1
+mkdir -p "/run/openvpn/$NEW_NS" > /dev/null 2>&1
+
+/usr/sbin/openvpn --setenv NETNS "$NEW_NS" --ifconfig-noexec --route-noexec --daemon "ovpn-$NEW_NS" --status "/run/openvpn/$NEW_NS.status" 10 --script-security 2 --config "$1" --writepid "/run/openvpn/$NEW_NS.pid" --up /etc/openvpn/netns --route-up /etc/openvpn/netns
+
+# Wait until tunnel is active
+ip netns exec "$NEW_NS" /bin/ping -c 1 1.1.1.1 > /dev/null 2>&1
+while [ $? -ne 0 ]; do
+	ip netns exec "$NEW_NS" /bin/ping -c 1 1.1.1.1 > /dev/null 2>&1
+done
+
+
+echo "VPN Status: active"
+echo "-------------------------"
+echo
+
+ip netns exec "$NEW_NS" /bin/bash --rcfile <(echo "export PS1=\"$NEW_NS> \"")
+
+# Clean up
+kill $(cat /run/openvpn/$NEW_NS.pid)
+ip netns del "$NEW_NS"

@@ -1,0 +1,24 @@
+[Unit]
+Description=OpenVPN connection to %i in new namespace
+BindsTo=netns@vpn-%i.service
+Requires=netns@vpn-%i.service
+After=netns@vpn-%i.service
+
+[Service]
+Type=notify
+RuntimeDirectory=openvpn
+ExecStart=/usr/sbin/openvpn --setenv NETNS "vpn-%i" --up-delay --ifconfig-noexec --route-noexec --status /run/openvpn/%i.status 10 --cd /etc/openvpn --script-security 2 --config "/etc/openvpn/%I.conf" --up netns --route-up netns
+CapabilityBoundingSet=CAP_IPC_LOCK CAP_NET_ADMIN CAP_NET_RAW CAP_SETGID CAP_SETUID CAP_SYS_CHROOT CAP_DAC_OVERRIDE CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
+PrivateTmp=true
+WorkingDirectory=/etc/openvpn
+PIDFile=/run/openvpn/%i.pid
+KillMode=process
+ExecReload=/bin/kill -HUP $MAINPID
+LimitNPROC=10
+DeviceAllow=/dev/null rw
+DeviceAllow=/dev/net/tun rw
+ProtectSystem=true
+ProtectHome=true
+RestartSec=5s
+Restart=on-failure
+
