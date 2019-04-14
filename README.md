@@ -17,7 +17,6 @@ It is even possible to nest VPN connections (Your PC -> VPN 1 -> VPN 2 -> public
 
     /bin/bash-vpn <VPN conf>
 
-Where _VPN_ is the name of a script in /etc/openvpn/
 eg
 
     bash-vpn /etc/openvpn/France.conf
