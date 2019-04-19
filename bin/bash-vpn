@@ -13,6 +13,8 @@ fi
 FILE="$(basename $1)"
 FILENAME_BASE="${FILE%.*}"
 CURRENT_NS="$(ip netns identify $$)"
+OLD_IP="$(curl -s api.ipify.org)"
+
 
 if [[ "$CURRENT_NS" ]]; then
 	NEW_NS="$CURRENT_NS-$FILENAME_BASE"
@@ -20,11 +22,13 @@ else
 	NEW_NS="vpn-$FILENAME_BASE"
 fi
 
-
+# Setup the network namespace
 systemctl start "netns@$NEW_NS.service"
 mkdir -p /run/openvpn/ 2>/dev/null
 mkdir -p "/etc/netns/$NEW_NS" > /dev/null 2>&1
 
+
+# Start openvpn and push it to the new namespace
 /usr/sbin/openvpn --setenv NETNS "$NEW_NS" --ifconfig-noexec --route-noexec --daemon "ovpn-$NEW_NS" --status "/run/openvpn/$NEW_NS.status" 10 --script-security 2 --config "$1" --writepid "/run/openvpn/$NEW_NS.pid" --up /etc/openvpn/netns --route-up /etc/openvpn/netns
 
 
@@ -34,8 +38,11 @@ while [ $? -ne 0 ]; do
 	ip netns exec "$NEW_NS" /bin/ping -c 1 1.1.1.1 > /dev/null 2>&1
 done
 
-
+# Execute bash in the new namespace
+NEW_IP="$(ip netns exec "$NEW_NS" curl -s api.ipify.org)"
 echo "VPN Status: active"
+echo "Old IP: ${OLD_IP}"
+echo "New IP: ${NEW_IP}"
 echo "-------------------------"
 echo
 
