@@ -5,6 +5,11 @@ if [ $# -ne 1 ]; then
 	exit 1
 fi
 
+if [[ $EUID -ne 0 ]]; then
+	echo "This script must be run as root" >&2
+	exit 2
+fi
+
 FILE="$(basename $1)"
 FILENAME_BASE="${FILE%.*}"
 CURRENT_NS="$(ip netns identify $$)"
@@ -15,14 +20,13 @@ else
 	NEW_NS="vpn-$FILENAME_BASE"
 fi
 
-ip netns add "$NEW_NS"
-ip netns exec "$NEW_NS" ip addr add 127.0.0.1/8 dev lo
-ip netns exec "$NEW_NS" ip link set lo up
 
+systemctl start "netns@$NEW_NS.service"
+mkdir -p /run/openvpn/ 2>/dev/null
 mkdir -p "/etc/netns/$NEW_NS" > /dev/null 2>&1
-mkdir -p "/run/openvpn/$NEW_NS" > /dev/null 2>&1
 
 /usr/sbin/openvpn --setenv NETNS "$NEW_NS" --ifconfig-noexec --route-noexec --daemon "ovpn-$NEW_NS" --status "/run/openvpn/$NEW_NS.status" 10 --script-security 2 --config "$1" --writepid "/run/openvpn/$NEW_NS.pid" --up /etc/openvpn/netns --route-up /etc/openvpn/netns
+
 
 # Wait until tunnel is active
 ip netns exec "$NEW_NS" /bin/ping -c 1 1.1.1.1 > /dev/null 2>&1
@@ -39,4 +43,4 @@ ip netns exec "$NEW_NS" /bin/bash --rcfile <(echo "export PS1=\"$NEW_NS> \"")
 
 # Clean up
 kill $(cat /run/openvpn/$NEW_NS.pid)
-ip netns del "$NEW_NS"
+systemctl stop "netns@$NEW_NS.service"

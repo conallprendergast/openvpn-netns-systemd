@@ -1,6 +1,5 @@
 [Unit]
 Description=Service for network namespace %i
-StopWhenUnneeded=true
 
 [Service]
 Type=oneshot
